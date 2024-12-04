@@ -265,3 +265,18 @@ void LSH::clear()
 	}
 
 }
+
+
+std::vector<std::unordered_set<int>> LSH::representatives() 
+{
+    std::vector<std::unordered_set<int>> results;
+
+    // Iterate over all buckets in the first table
+    for (const auto& pair : tables[0]) { // `tables[0]` is the first hash table
+        std::unordered_set<int> local_result;
+        retrieve(local_result, 0, pair.first); // Use the bucket index (key) from the map
+        results.push_back(local_result);
+    }
+
+    return results;
+}
