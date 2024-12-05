@@ -129,3 +129,7 @@ class LSH:
 
     def clear(self):
         self.lsh_.clear()
+
+    def representatives(self):
+        return self.lsh_.representatives()
+    
