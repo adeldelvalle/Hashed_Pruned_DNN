@@ -44,12 +44,28 @@ class HashedFC(nn.Module):
         print("Bucket indices representing the weights:")
         print(bucket_indices)
 
+        self.process_weights(bucket_indices)
+
+    def process_weights(self, rep):
+        for bucket in rep: 
+            sum = 0
+            count = 0
+            for idx in bucket:
+                weight = self.params.weight[idx]
+                sum += weight 
+                count += 1
+            
+            representative = sum/count 
+            
+
+
+
 
 class SimpleMLP(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dim):
         super(SimpleMLP, self).__init__()
-        self.fc1 = HashedFC(input_dim, hidden_dim, 3)
-        self.fc2 = HashedFC(hidden_dim, output_dim, 3)
+        self.fc1 = HashedFC(input_dim, hidden_dim, 10)
+        self.fc2 = HashedFC(hidden_dim, output_dim, 4)
 
     def forward(self, x):
         x = F.relu(self.fc1.params(x))
