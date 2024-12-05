@@ -35,5 +35,5 @@ class LSH
 		std::vector<std::unordered_set<int>> query_multiset(const int* fp, const int N);
 		void clear();
 		std::vector<int> print_stats();
-		std::vector<std::unordered_set<int>> representatives; 
+		std::vector<std::unordered_set<int>> representatives(); 
 };

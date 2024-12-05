@@ -18,6 +18,7 @@ cdef extern from "LSH.h":
         # void query_multi_mask_L(int*, float*,float*, int, int) except +
         void clear() except +
         vector[int] print_stats()
+        vector[unordered_set[int]] representatives() except +
 
 cdef class pyLSH:
     cdef LSH* c_lsh
@@ -171,4 +172,4 @@ cdef class pyLSH:
         self.c_lsh.clear()
 
     def representatives(self):
-        return self.c_lsh.representatives
+        return self.c_lsh.representatives()
