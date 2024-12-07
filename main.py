@@ -29,7 +29,6 @@ class HashedFC(nn.Module):
         # Activation counters and running metrics
         self.running_activations = torch.zeros(output_dim, device='cuda:0')
         self.lsh = None
-        #self.initializeLSH()
 
 
     def init_weights(self, weight, bias):
@@ -143,9 +142,6 @@ class HashedFC(nn.Module):
         # Replace the old layer
         self.params = new_layer
         self.add_module('params', self.params)
-
-        
-        # Rebuild LSH
         
         #print(f"Pruned weights. Kept indices: {representatives}")"""
 
@@ -161,7 +157,6 @@ class HashedFC(nn.Module):
         if weight.dim() > 1:  # Ensure it's not applied to bias (1D tensor)
             nn.init.kaiming_uniform_(weight, mode='fan_in', nonlinearity='relu')
 
-    
 
 class HashedNetwork(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
