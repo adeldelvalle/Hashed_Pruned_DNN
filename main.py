@@ -61,56 +61,60 @@ class HashedFC(nn.Module):
         """
         Select representatives based on the weighted average of activations and weights.
         """
-        if self.lsh == None: 
+        if self.lsh is None: 
             self.initializeLSH()
         else:
             self.rebuildLSH()
 
+        # Get bucket indices
         bucket_indices = self.lsh.representatives()
 
-        representatives = []
-        new_weights = self.params.weight.clone()  # Clone the weight tensor to avoid in-place modification
-        for bucket in bucket_indices:
+        # Clone the weight tensor to avoid in-place modification
+        new_weights = self.params.weight.clone()
+
+        # Preallocate tensor for representatives
+        device = self.params.weight.device
+        representative_indices = torch.empty(len(bucket_indices), dtype=torch.long, device=device)
+
+        # Process each bucket
+        for i, bucket in enumerate(bucket_indices):
             if len(bucket) == 0:
+                # Handle empty buckets by assigning a dummy value (e.g., -1)
+                representative_indices[i] = -1
                 continue
 
-            # Initialize sums for weighted average computation
-            weighted_sum = 0
-            count = 0
-            rep_idx = 0
-            # Compute weighted sum of weights and count total activations
-            for idx in bucket:
-                activation = self.running_activations[idx]
-                weight = self.params.weight[idx]
-                weighted_sum += activation * weight
-                count += 1
+            # Convert bucket indices to tensor
+            bucket_tensor = torch.tensor(list(bucket), dtype=torch.long, device=device)
 
-                if self.running_activations[idx] > self.running_activations[rep_idx]:
-                    rep_idx = idx
+            # Gather weights and activations for the current bucket
+            bucket_activations = self.running_activations[bucket_tensor]
+            bucket_weights = self.params.weight[bucket_tensor]
+
+            # Compute weighted sum of weights and activations
+            weighted_sum = (bucket_weights * bucket_activations.unsqueeze(1)).sum(dim=0)
+            num_weights = len(bucket)
 
             # Calculate representative weight
-            if count > 0:
-                representative_weight = weighted_sum / count
-            else:
-                representative_weight = torch.mean(self.params.weight[bucket], dim=0)
-            
-            new_weights[rep_idx] = representative_weight
-            # Find the index of the weight closest to the representative weight
-            representatives.append(rep_idx)
-        
-        
+            representative_weight = weighted_sum / num_weights
+
+            # Find the index of the most activated weight
+            most_activated_idx = bucket_tensor[bucket_activations.argmax()]
+            new_weights[most_activated_idx] = representative_weight
+
+            # Store the representative index
+            representative_indices[i] = most_activated_idx
+
+        # Update the weights in the model
         self.params.weight.data = new_weights
 
-
-        return representatives  # Return as a list of representative indices
+        return representative_indices
 
 
 
 
     def prune_weights(self, representatives, input_dim):
         # Ensure `representatives` is a tensor of indices
-        keep_indices = torch.tensor(representatives, dtype=torch.long, device=device)
-
+        keep_indices = representatives
 
         # Slice rows (output dimensions) and keep all columns for now
         pruned_weights = self.params.weight[keep_indices, :input_dim]  # Slice rows and columns
