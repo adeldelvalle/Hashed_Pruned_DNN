@@ -105,9 +105,12 @@ class HashedFC(nn.Module):
         return representatives  # Return as a list of representative indices
 
 
+
+
     def prune_weights(self, representatives, input_dim):
         # Ensure `representatives` is a tensor of indices
         keep_indices = torch.tensor(representatives, dtype=torch.long, device=device)
+
 
         # Slice rows (output dimensions) and keep all columns for now
         pruned_weights = self.params.weight[keep_indices, :input_dim]  # Slice rows and columns
@@ -129,7 +132,7 @@ class HashedFC(nn.Module):
         # Copy pruned weights and biases into the new layer
         new_layer.weight.data.copy_(pruned_weights)
         new_layer.bias.data.copy_(pruned_biases)
-        print(f"New layer after assignment: {new_layer.weight.shape}, {new_layer.bias.shape}")
+        #print(f"New layer after assignment: {new_layer.weight.shape}, {new_layer.bias.shape}")
         #self.he_init(new_layer.weight)  # Or he_init(new_layer.weight)
         #nn.init.zeros_(new_layer.bias)
         self.init_weights(new_layer.weight, new_layer.bias)
@@ -215,7 +218,7 @@ def generate_synthetic_data(n_samples=10000, n_features=30, n_classes=10):
 
 
 # Train function
-def train_model(model, optimizer, criterion, X_train, y_train, epochs=19, prune_every=10):
+def train_model(model, optimizer, criterion, X_train, y_train, epochs=29, prune_every=10):
     """
     Train the model and prune hashed layers every 'prune_every' epochs.
     """
@@ -230,30 +233,18 @@ def train_model(model, optimizer, criterion, X_train, y_train, epochs=19, prune_
         output = model(X_train)
         if rehash:
             optimizer.param_groups = []
-            # Example: Adjusting parameter groups after pruning
-            #optimizer.param_groups[0]['params'] = model.parameters()
-
-            print(f"\nEpoch {epoch + 1}: Pruning weights and adjusting dimensions...")
-            #new_optimizer= torch.optim.Adam(model.parameters(), lr=0.001)
-
-            # Prune fc1 and propagate changes to fc2
-            #model.fc1.update_weights(X_train.shape[1])
             new_params = model.fc1.params.parameters()
             optimizer.add_param_group({'params': new_params})
 
-            # Prune fc2 and propagate changes to fc3
-            #model.fc2.update_weights(model.fc1.num_class)
             new_params = model.fc2.params.parameters()
             optimizer.add_param_group({'params': new_params})
 
-            #model.fc3.prune_weights(torch.arange(model.fc3.num_class, device=device), model.fc2.num_class)
             new_params = model.fc3.params.parameters()
             optimizer.add_param_group({'params': new_params})
 
             new_params = model.fc4.params.parameters()
             optimizer.add_param_group({'params': new_params})
 
-            # After pruning and reassigning params:
 
         #monitor_gradients(model)
         loss = criterion(output, y_train)
@@ -263,7 +254,6 @@ def train_model(model, optimizer, criterion, X_train, y_train, epochs=19, prune_
 
         optimizer.step()
        
-
 
 # Function to measure accuracy
 def measure_accuracy(model, X, y):
@@ -284,8 +274,8 @@ def monitor_gradients(model):
 
 # Main comparison
 def compare_networks():
-    input_dim = 30
-    hidden_dim = 10000
+    input_dim = 60
+    hidden_dim = 15000
     output_dim = 2
 
     # Generate data
