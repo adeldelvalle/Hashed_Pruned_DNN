@@ -124,7 +124,6 @@ class LSH:
         return list(result)
 
     def print_stats(self):
-        print("in lsh new")
         return self.lsh_.print_stats()
 
     def clear(self):
