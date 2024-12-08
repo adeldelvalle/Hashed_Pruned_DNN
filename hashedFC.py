@@ -17,16 +17,20 @@ class HashedFC(nn.Module):
         self.L = 1  # Single hash table
         self.hash_weight = None  # Optionally provide custom hash weights
         self.num_class = output_dim  # Number of output classes
-        #self.init_weights(self.params.weight, self.params.bias)
+        self.init_weights(self.params.weight, self.params.bias)
         self.rehash = False
         # Activation counters and running metrics
         self.running_activations = torch.zeros(output_dim, device='cuda:0')
         self.lsh = None
+        self.prev_weight_mean = None
 
 
     def init_weights(self, weight, bias):
-        nn.init.kaiming_uniform_(weight, mode='fan_in', nonlinearity='relu')
-        nn.init.zeros_(bias)
+        initrange = 0.05
+        weight.data.uniform_(-initrange, initrange)
+        bias.data.fill_(0)
+        # bias.require_gradient = False
+
 
     def initializeLSH(self):
         simhash = SimHash(self.D + 1, self.K, self.L, self.hash_weight)
@@ -181,10 +185,29 @@ class HashedFC(nn.Module):
     def rehash_or_not(self, input_dim, activations):
         #print("current input dim:", self.D)
         entropy = self.calc_activation_entropy(activations)
+        weight_change = self.calc_weight_change()
         print(f"entropy: {entropy}")
 
-        if entropy >= 0.975:
+        #print(weight_change)
+        if entropy >= 0.98:
             self.update_weights(input_dim)
             self.running_activations = torch.zeros(self.num_class, device='cuda:0')
             return True
         return False
+    
+    def calc_weight_change(self):
+    # Initialize `prev_weight_mean` if it doesn't exist
+        if self.prev_weight_mean == None:
+            self.prev_weight_mean = torch.mean(self.params.weight.data).item()
+            return 0 
+
+        # Compute the current mean of weights
+        current_mean = torch.mean(self.params.weight.data)
+
+        # Calculate the squared difference between the current and previous mean
+        weight_change = (self.prev_weight_mean - current_mean) ** 2
+
+        # Update the `prev_weight_mean` for the next computation
+        self.prev_weight_mean = current_mean
+
+        return weight_change.item()  # Return a scalar

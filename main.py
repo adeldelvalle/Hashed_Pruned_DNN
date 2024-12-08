@@ -109,7 +109,7 @@ def train_model(model, optimizer, criterion, X_train, y_train, epochs=29, prune_
                     next_name = model.indexes[layer_name]
                     model.update_layers[layer_name] = False
                     if next_name == 'fc4' or not model.update_layers[next_name]:
-                        #print(next_name)
+                        print(next_name)
                         recreate_next_layer(layer, next_layer, optimizer)
 
 
