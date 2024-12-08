@@ -10,153 +10,10 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 import time
 import torch.nn.functional as F
-from torch.autograd import Variable
 from adam_base import Adam
+from hashedFC import HashedFC
 
 device = torch.device("cuda:0")
-
-class HashedFC(nn.Module):
-    def __init__(self, input_dim, output_dim, K):
-        super(HashedFC, self).__init__()
-        self.params = nn.Linear(input_dim, output_dim)
-        self.K = 5  # Amount of Hash Functions
-        self.D = input_dim  # Input dimension
-        self.L = 1  # Single hash table
-        self.hash_weight = None  # Optionally provide custom hash weights
-        self.num_class = output_dim  # Number of output classes
-        #self.init_weights(self.params.weight, self.params.bias)
-        self.rehash = False
-        # Activation counters and running metrics
-        self.running_activations = torch.zeros(output_dim, device='cuda:0')
-        self.lsh = None
-
-
-    def init_weights(self, weight, bias):
-        nn.init.kaiming_uniform_(weight, mode='fan_in', nonlinearity='relu')
-        nn.init.zeros_(bias)
-
-    def initializeLSH(self):
-        simhash = SimHash(self.D + 1, self.K, self.L, self.hash_weight)
-        self.lsh = LSH(simhash, self.K, self.L)
-        weight_tolsh = torch.cat((self.params.weight, self.params.bias.unsqueeze(1)), dim=1)
-        self.lsh.insert_multi(weight_tolsh.to(device).data, self.num_class)
-
-    def rebuildLSH(self):
-        self.lsh.clear()
-        self.lsh.setSimHash(SimHash(self.D + 1, self.K, self.L))
-        weight_tolsh = torch.cat((self.params.weight, self.params.bias.unsqueeze(1)), dim=1)
-        self.lsh.insert_multi(weight_tolsh.to(device).data, self.num_class )
-
-
-    def accumulate_metrics(self, activations):
-        # Binary mask: 1 if activated, 0 otherwise
-        activation_mask = (activations != 0).float()
-        
-        # Accumulate only activations greater than 0
-        self.running_activations += activation_mask
-
-
-    def select_representatives(self):
-        """
-        Select representatives based on the weighted average of activations and weights.
-        """
-        if self.lsh is None: 
-            self.initializeLSH()
-        else:
-            self.rebuildLSH()
-
-        # Get bucket indices
-        bucket_indices = self.lsh.representatives()
-
-        # Clone the weight tensor to avoid in-place modification
-        new_weights = self.params.weight.clone()
-
-        # Preallocate tensor for representatives
-        device = self.params.weight.device
-        representative_indices = torch.empty(len(bucket_indices), dtype=torch.long, device=device)
-
-        # Process each bucket
-        for i, bucket in enumerate(bucket_indices):
-            if len(bucket) == 0:
-                # Handle empty buckets by assigning a dummy value (e.g., -1)
-                representative_indices[i] = -1
-                continue
-
-            # Convert bucket indices to tensor
-            bucket_tensor = torch.tensor(list(bucket), dtype=torch.long, device=device)
-
-            # Gather weights and activations for the current bucket
-            bucket_activations = self.running_activations[bucket_tensor]
-            bucket_weights = self.params.weight[bucket_tensor]
-
-            # Compute weighted sum of weights and activations
-            weighted_sum = (bucket_weights * bucket_activations.unsqueeze(1)).sum(dim=0)
-            num_weights = len(bucket)
-
-            # Calculate representative weight
-            representative_weight = weighted_sum / num_weights
-
-            # Find the index of the most activated weight
-            most_activated_idx = bucket_tensor[bucket_activations.argmax()]
-            new_weights[most_activated_idx] = representative_weight
-
-            # Store the representative index
-            representative_indices[i] = most_activated_idx
-
-        # Update the weights in the model
-        self.params.weight.data = new_weights
-
-        return representative_indices
-
-
-
-
-    def prune_weights(self, representatives, input_dim):
-        # Ensure `representatives` is a tensor of indices
-        keep_indices = representatives
-
-        # Slice rows (output dimensions) and keep all columns for now
-        pruned_weights = self.params.weight[keep_indices, :input_dim]  # Slice rows and columns
-        pruned_biases = self.params.bias[keep_indices]                 # Slice only rows for biases
-
-        # Check the shapes of pruned weights and biases
-        #print(f"Pruned weights shape: {pruned_weights.shape}, Pruned biases shape: {pruned_biases.shape}")
-
-        # Update the number of classes (output dimensions)
-        self.num_class = len(representatives)
-        self.D = input_dim  # Number of input features
-
-        # Verify dimensions
-        #print(f"Input dim: {self.D}, Reps: {self.num_class}")
-
-        # Initialize a new Linear layer with pruned dimensions
-        new_layer = nn.Linear(self.D, self.num_class).to(device)
-
-        # Copy pruned weights and biases into the new layer
-        new_layer.weight.data.copy_(pruned_weights)
-        new_layer.bias.data.copy_(pruned_biases)
-        #print(f"New layer after assignment: {new_layer.weight.shape}, {new_layer.bias.shape}")
-        #self.he_init(new_layer.weight)  # Or he_init(new_layer.weight)
-        #nn.init.zeros_(new_layer.bias)
-        self.init_weights(new_layer.weight, new_layer.bias)
-        # Replace the old layer
-        self.params = new_layer
-        self.add_module('params', self.params)
-        
-        #print(f"Pruned weights. Kept indices: {representatives}")"""
-
-
-    def update_weights(self, input_dim):
-        representatives = self.select_representatives()
-        self.prune_weights(representatives, input_dim)
-
-    def forward(self, x):
-        return self.params(x)
-    
-    def he_init(self, weight):
-        if weight.dim() > 1:  # Ensure it's not applied to bias (1D tensor)
-            nn.init.kaiming_uniform_(weight, mode='fan_in', nonlinearity='relu')
-
 
 class HashedNetwork(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
@@ -166,10 +23,13 @@ class HashedNetwork(nn.Module):
         self.fc3 = HashedFC(hidden_dim, hidden_dim, K=4)
         self.fc4 = HashedFC(hidden_dim, output_dim, K=4)
         self.rehash = False
+        self.update_layers = {'fc1': False, 'fc2': False, 'fc3': False}
+        self.indexes = {'fc1':'fc2', 'fc2':'fc3', 'fc3':'fc4'}
+      
 
 
     def forward(self, x):
-        if self.rehash:
+        """if self.rehash:
             self.fc1.update_weights(x.shape[1])
             self.fc2.update_weights(self.fc1.num_class)
             self.fc3.update_weights(self.fc2.num_class)
@@ -177,20 +37,21 @@ class HashedNetwork(nn.Module):
             self.fc1.running_activations = torch.zeros(self.fc1.num_class, device='cuda:0')
             self.fc2.running_activations = torch.zeros(self.fc2.num_class, device='cuda:0')
             self.fc3.running_activations = torch.zeros(self.fc3.num_class, device='cuda:0')
-            self.rehash = False
+            self.rehash = False"""
 
-
+        input_dim = x.shape[1]
         x = F.relu(self.fc1(x))
-        activations = torch.sum(x, dim=0)
-        self.fc1.accumulate_metrics(activations)
+        self.update_layers['fc1'] = self.fc1.accumulate_metrics(input_dim, x)
         x = F.relu(self.fc2(x))
-        self.fc2.accumulate_metrics(torch.sum(x, dim=0))
+        self.update_layers['fc2'] = self.fc2.accumulate_metrics(self.fc1.num_class, x)
         x = self.fc3(x)
-        self.fc3.accumulate_metrics(torch.sum(x, dim=0))
+        self.update_layers['fc3'] = self.fc3.accumulate_metrics(self.fc2.num_class, x)
         x = self.fc4(x)
-        self.fc4.accumulate_metrics(torch.sum(x, dim=0))
 
         return x
+    
+
+        
 
 
 class VanillaNetwork(nn.Module):
@@ -224,34 +85,160 @@ def train_model(model, optimizer, criterion, X_train, y_train, epochs=29, prune_
     model.train()
     for epoch in range(epochs):
         # Dynamically prune and adjust hashed layers every 'prune_every' epochs
-        rehash = isinstance(model, HashedNetwork) and (epoch + 1) % prune_every == 0
-        model.rehash = rehash
+        #rehash = isinstance(model, HashedNetwork) and (epoch + 1) % prune_every == 0
+        #model.rehash = rehash
         
 
         optimizer.zero_grad()
         output = model(X_train)
-        if rehash:
-            optimizer.param_groups = []
-            new_params = model.fc1.params.parameters()
-            optimizer.add_param_group({'params': new_params})
+        #if rehash:
 
-            new_params = model.fc2.params.parameters()
-            optimizer.add_param_group({'params': new_params})
+        if isinstance(model, HashedNetwork):
+            for layer_name, rehash in model.update_layers.items():
+                if rehash:
+                    # Dynamically get the layer using getattr
+                    print(f"hashing {layer_name}")
+                    layer = getattr(model, layer_name)
+                    next_layer = getattr(model, model.indexes[layer_name])
 
-            new_params = model.fc3.params.parameters()
-            optimizer.add_param_group({'params': new_params})
+                    #print(f"{layer} is rehashing!")
+                    # Get the new parameters from the layer
+                    new_params = layer.params.parameters()
+                    # Update the optimizer
+                    update_optimizer_param_group(optimizer, layer_name, new_params)
+                    next_name = model.indexes[layer_name]
+                    model.update_layers[layer_name] = False
+                    if next_name == 'fc4' or not model.update_layers[next_name]:
+                        #print(next_name)
+                        recreate_next_layer(layer, next_layer, optimizer)
 
-            new_params = model.fc4.params.parameters()
-            optimizer.add_param_group({'params': new_params})
+
+        """optimizer.param_groups = []
+        new_params = model.fc1.params.parameters()
+        optimizer.add_param_group({'params': new_params})
+
+        new_params = model.fc2.params.parameters()
+        optimizer.add_param_group({'params': new_params})
+
+        new_params = model.fc3.params.parameters()
+        optimizer.add_param_group({'params': new_params})
+
+        new_params = model.fc4.params.parameters()
+        optimizer.add_param_group({'params': new_params})"""
 
 
         #monitor_gradients(model)
         loss = criterion(output, y_train)
         loss.backward()
         print(f"Epoch {epoch+1} Loss: {loss}")
-        #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
         optimizer.step()
+
+
+def recreate_next_layer(prev_layer, next_layer, optimizer):
+    """
+    Recreate the next layer with updated dimensions based on the output of the previous layer.
+
+    Args:
+        prev_layer: The rehashed layer (e.g., model.fc1).
+        next_layer: The subsequent layer to be recreated (e.g., model.fc2).
+    """
+    new_input_dim = prev_layer.num_class  # Updated input dimensions
+
+    # Save old weights and biases
+    old_weights = next_layer.params.weight.data[:, :new_input_dim].clone()
+    old_biases = next_layer.params.bias.data.clone()
+
+    # Recreate the next layer
+    new_layer = nn.Linear(new_input_dim, next_layer.num_class).to(next_layer.params.weight.device)
+    new_layer.weight.data[:old_weights.size(0), :] = old_weights
+    new_layer.bias.data[:old_biases.size(0)] = old_biases
+
+    # Replace the next layer with the new one
+    next_layer.params = new_layer
+    next_layer.D = new_input_dim
+
+    new_params = next_layer.params.parameters()
+    optimizer.add_param_group({'params': new_params})
+
+
+def slice_next_layer_weights(prev_layer, next_layer, optimizer):
+    """
+    Slices the weights of the next layer to match the new output dimensions of the previous layer
+    and updates the optimizer state for the sliced weights.
+
+    Args:
+        prev_layer: The rehashed layer (e.g., model.fc1).
+        next_layer: The subsequent layer to be sliced (e.g., model.fc2).
+        optimizer: The optimizer being used for training.
+    """
+    original_tensor = next_layer.params.weight.clone()  # Reference to the original weight tensor
+    new_input_dim = prev_layer.num_class  # New input dimension based on the rehashed previous layer
+    
+    with torch.no_grad():
+        # Slice the weights to match the new input dimension
+        next_layer.params.weight.data = next_layer.params.weight.data[:, :new_input_dim]
+
+    sliced_tensor = next_layer.params.weight
+
+
+    # Update the input dimension of the next layer
+    next_layer.D = new_input_dim
+
+    for group in optimizer.param_groups:
+        for i, param in enumerate(group['params']):
+            if param is original_tensor:
+                group['params'][i] = next_layer.params.weight
+                return
+
+    device = sliced_tensor.device
+    dtype = sliced_tensor.dtype
+
+    if original_tensor not in optimizer.state:
+        print(f"State not found for tensor: {original_tensor.shape}. Initializing state.")
+        optimizer.state[sliced_tensor] = {
+            'step': torch.tensor(0.0, device=device, dtype=torch.float32),
+            'exp_avg': torch.zeros_like(sliced_tensor, device=device, dtype=dtype),
+            'exp_avg_sq': torch.zeros_like(sliced_tensor, device=device, dtype=dtype),
+        }
+        return
+
+    state = optimizer.state.pop(original_tensor)
+
+    # Resize and move state tensors to the new tensor
+    if 'exp_avg' in state:
+        state['exp_avg'] = state['exp_avg'][:, :sliced_tensor.size(1)].to(device=device, dtype=dtype)
+    if 'exp_avg_sq' in state:
+        state['exp_avg_sq'] = state['exp_avg_sq'][:, :sliced_tensor.size(1)].to(device=device, dtype=dtype)
+
+    optimizer.state[sliced_tensor] = state
+
+
+
+def update_optimizer_param_group(optimizer, layer_name, new_params):
+    """
+    Updates the parameters in the optimizer's parameter group for a specific layer.
+
+    Args:
+        optimizer (torch.optim.Optimizer): The optimizer to update.
+        layer_name (str): The name of the layer being updated (optional if used for clarity).
+        new_params (iterable): The new parameters for the layer.
+    """
+    # Find the first parameter group (assuming each layer has its own group)
+    for group in optimizer.param_groups:
+        if layer_name in group.get('name', ''):  # Optional: check the layer name
+            # Replace parameters in this group
+            group['params'] = new_params
+
+            # Clear the optimizer state for the new parameters
+            for p in new_params:
+                if p in optimizer.state:
+                    optimizer.state.pop(p)
+            break
+
+
+
        
 
 # Function to measure accuracy
