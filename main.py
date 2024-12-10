@@ -10,7 +10,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 import time
 import torch.nn.functional as F
-from torch.autograd import Variable
 from adam_base import Adam
 
 device = torch.device("cuda:0")
@@ -35,7 +34,6 @@ class HashedFC(nn.Module):
         initrange = 0.05
         weight.data.uniform_(-initrange, initrange)
         bias.data.fill_(0)
-        # bias.require_gradient = False
 
     def initializeLSH(self):
         simhash = SimHash(self.D + 1, self.K, self.L, self.hash_weight)
@@ -103,13 +101,6 @@ class HashedFC(nn.Module):
             bucket_activations = self.running_activations[rows, cols]  # Shape: [len(bucket)]
             bucket_weights = self.params.weight[rows, cols]  # Shape: [len(bucket)]
 
-
-            """print(f"Bucket Tensor: {bucket_tensor}")
-            print(f"Rows: {rows}")
-            print(f"Cols: {cols}")
-            print(f"Bucket Activations Shape: {bucket_activations.shape}")
-            print(f"Bucket Weights Shape: {bucket_weights.shape}")"""
-
             # Compute weighted sum and activation sum
             weighted_sum = (bucket_weights * bucket_activations).sum()
             activation_sum = bucket_activations.sum()
@@ -125,8 +116,6 @@ class HashedFC(nn.Module):
             most_activated_row, most_activated_col = rows[argmax_idx], cols[argmax_idx]
             new_weights[most_activated_row, most_activated_col] = representative_weight
           
-
-
             # Store the representative index
             representative_indices[i] = most_activated_row * self.num_class + most_activated_col
 
@@ -134,8 +123,6 @@ class HashedFC(nn.Module):
         self.params.weight.data = new_weights
 
         return representative_indices
-
-
 
 
     def prune_weights(self, representatives, input_dim):
@@ -146,7 +133,6 @@ class HashedFC(nn.Module):
         pruned_weights = self.params.weight[keep_indices, :input_dim]  # Slice rows and columns
         pruned_biases = self.params.bias[keep_indices]                 # Slice only rows for biases
 
-        # Check the shapes of pruned weights and biases
         #print(f"Pruned weights shape: {pruned_weights.shape}, Pruned biases shape: {pruned_biases.shape}")
 
         # Update the number of classes (output dimensions)
@@ -163,8 +149,7 @@ class HashedFC(nn.Module):
         new_layer.weight.data.copy_(pruned_weights)
         new_layer.bias.data.copy_(pruned_biases)
         #print(f"New layer after assignment: {new_layer.weight.shape}, {new_layer.bias.shape}")
-        #self.he_init(new_layer.weight)  # Or he_init(new_layer.weight)
-        #nn.init.zeros_(new_layer.bias)
+
         self.init_weights(new_layer.weight, new_layer.bias)
         # Replace the old layer
         self.params = new_layer
@@ -180,7 +165,6 @@ class HashedFC(nn.Module):
     def forward(self, x):
         return self.params(x)
     
-  
 
 
 class HashedNetwork(nn.Module):
