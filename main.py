@@ -189,6 +189,7 @@ def slice_next_layer_weights(prev_layer, next_layer, optimizer):
     for group in optimizer.param_groups:
         for i, param in enumerate(group['params']):
             if param is original_tensor:
+                print("-" * 20)
                 group['params'][i] = next_layer.params.weight
                 return
 
@@ -230,12 +231,17 @@ def update_optimizer_param_group(optimizer, layer_name, new_params):
         if layer_name in group.get('name', ''):  # Optional: check the layer name
             # Replace parameters in this group
             group['params'] = new_params
+            print("entro")
 
             # Clear the optimizer state for the new parameters
             for p in new_params:
                 if p in optimizer.state:
                     optimizer.state.pop(p)
             break
+
+    
+    optimizer.add_param_group({'params': new_params})
+
 
 
 

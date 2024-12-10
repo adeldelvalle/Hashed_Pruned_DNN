@@ -20,7 +20,7 @@ class HashedFC(nn.Module):
         self.init_weights(self.params.weight, self.params.bias)
         self.rehash = False
         # Activation counters and running metrics
-        self.running_activations = torch.zeros(output_dim, device='cuda:0')
+        self.running_activations = torch.zeros(input_dim, output_dim, device='cuda:0')
         self.lsh = None
         self.prev_weight_mean = None
 
@@ -71,26 +71,51 @@ class HashedFC(nn.Module):
                 representative_indices[i] = -1
                 continue
 
+            if len(bucket) == 1:
+                # Directly handle single-weight buckets
+                single_idx = list(bucket)[0]
+                row, col = single_idx // self.num_class, single_idx % self.D
+                representative_indices[i] = single_idx
+                new_weights[row, col] = self.params.weight[row, col]
+                continue
+
             # Convert bucket indices to tensor
             bucket_tensor = torch.tensor(list(bucket), dtype=torch.long, device=device)
 
+            # Convert flat indices to (row, column) pairs
+            rows = bucket_tensor // self.num_class  # Row indices
+            cols = bucket_tensor % self.D  # Column indices
+
             # Gather weights and activations for the current bucket
-            bucket_activations = self.running_activations[bucket_tensor]
-            bucket_weights = self.params.weight[bucket_tensor]
+            bucket_activations = self.running_activations[rows, cols]  # Shape: [len(bucket)]
+            bucket_weights = self.params.weight[rows, cols]  # Shape: [len(bucket)]
 
-            # Compute weighted sum of weights and activations
-            weighted_sum = (bucket_weights * bucket_activations.unsqueeze(1)).sum(dim=0)
-            num_weights = len(bucket)
 
-            # Calculate representative weight
-            representative_weight = weighted_sum / num_weights
+            """print(f"Bucket Tensor: {bucket_tensor}")
+            print(f"Rows: {rows}")
+            print(f"Cols: {cols}")
+            print(f"Bucket Activations Shape: {bucket_activations.shape}")
+            print(f"Bucket Weights Shape: {bucket_weights.shape}")"""
 
-            # Find the index of the most activated weight
-            most_activated_idx = bucket_tensor[bucket_activations.argmax()]
-            new_weights[most_activated_idx] = representative_weight
+            # Compute weighted sum and activation sum
+            weighted_sum = (bucket_weights * bucket_activations).sum()
+            activation_sum = bucket_activations.sum()
+
+            # Avoid division by zero
+            if activation_sum == 0:
+                representative_weight = 0
+            else:
+                representative_weight = weighted_sum / activation_sum
+
+            # Find the most activated weight
+            argmax_idx = bucket_activations.argmax()
+            most_activated_row, most_activated_col = rows[argmax_idx], cols[argmax_idx]
+            new_weights[most_activated_row, most_activated_col] = representative_weight
+          
+
 
             # Store the representative index
-            representative_indices[i] = most_activated_idx
+            representative_indices[i] = most_activated_row * self.num_class + most_activated_col
 
         # Update the weights in the model
         self.params.weight.data = new_weights
@@ -167,18 +192,15 @@ class HashedFC(nn.Module):
 
     def forward(self, x):
         return self.params(x)
-    
-    def he_init(self, weight):
-        if weight.dim() > 1:  # Ensure it's not applied to bias (1D tensor)
-            nn.init.kaiming_uniform_(weight, mode='fan_in', nonlinearity='relu')
 
     
     def accumulate_metrics(self, input_dim, activations):
         # Binary mask: 1 if activated, 0 otherwise
-        activation_summed = torch.sum(activations, dim=0)
-        activation_mask = (activation_summed > 0).float()
+        activation_mask = (activations > 0).float()
+        activation_summed = torch.sum(activation_mask, dim=0)
+        
         # Accumulate only activations greater than 0
-        self.running_activations += activation_mask
+        self.running_activations += activation_summed.unsqueeze(0)
         return self.rehash_or_not(input_dim, activations)
 
 
@@ -188,10 +210,11 @@ class HashedFC(nn.Module):
         weight_change = self.calc_weight_change()
         print(f"entropy: {entropy}")
 
+
         #print(weight_change)
-        if entropy >= 0.98:
+        if entropy >= 0.965:
             self.update_weights(input_dim)
-            self.running_activations = torch.zeros(self.num_class, device='cuda:0')
+            self.running_activations = torch.zeros(input_dim, self.num_class, device='cuda:0')
             return True
         return False
     
