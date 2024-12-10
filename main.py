@@ -19,21 +19,23 @@ class HashedFC(nn.Module):
     def __init__(self, input_dim, output_dim, K):
         super(HashedFC, self).__init__()
         self.params = nn.Linear(input_dim, output_dim)
-        self.K = 5  # Amount of Hash Functions
+        self.K = K  # Amount of Hash Functions
         self.D = input_dim  # Input dimension
         self.L = 1  # Single hash table
         self.hash_weight = None  # Optionally provide custom hash weights
         self.num_class = output_dim  # Number of output classes
-        #self.init_weights(self.params.weight, self.params.bias)
+        self.init_weights(self.params.weight, self.params.bias)
         self.rehash = False
         # Activation counters and running metrics
-        self.running_activations = torch.zeros(output_dim, device='cuda:0')
+        self.running_activations = torch.zeros(input_dim, output_dim, device='cuda:0')
         self.lsh = None
 
 
     def init_weights(self, weight, bias):
-        nn.init.kaiming_uniform_(weight, mode='fan_in', nonlinearity='relu')
-        nn.init.zeros_(bias)
+        initrange = 0.05
+        weight.data.uniform_(-initrange, initrange)
+        bias.data.fill_(0)
+        # bias.require_gradient = False
 
     def initializeLSH(self):
         simhash = SimHash(self.D + 1, self.K, self.L, self.hash_weight)
@@ -49,11 +51,11 @@ class HashedFC(nn.Module):
 
 
     def accumulate_metrics(self, activations):
-        # Binary mask: 1 if activated, 0 otherwise
-        activation_mask = (activations != 0).float()
+        activation_mask = (activations > 0).float()
+        activation_summed = torch.sum(activation_mask, dim=0)
         
         # Accumulate only activations greater than 0
-        self.running_activations += activation_mask
+        self.running_activations += activation_summed.unsqueeze(0)
 
 
     def select_representatives(self):
@@ -82,26 +84,51 @@ class HashedFC(nn.Module):
                 representative_indices[i] = -1
                 continue
 
+            if len(bucket) == 1:
+                # Directly handle single-weight buckets
+                single_idx = list(bucket)[0]
+                row, col = single_idx // self.num_class, single_idx % self.D
+                representative_indices[i] = single_idx
+                new_weights[row, col] = self.params.weight[row, col]
+                continue
+
             # Convert bucket indices to tensor
             bucket_tensor = torch.tensor(list(bucket), dtype=torch.long, device=device)
 
+            # Convert flat indices to (row, column) pairs
+            rows = bucket_tensor // self.num_class  # Row indices
+            cols = bucket_tensor % self.D  # Column indices
+
             # Gather weights and activations for the current bucket
-            bucket_activations = self.running_activations[bucket_tensor]
-            bucket_weights = self.params.weight[bucket_tensor]
+            bucket_activations = self.running_activations[rows, cols]  # Shape: [len(bucket)]
+            bucket_weights = self.params.weight[rows, cols]  # Shape: [len(bucket)]
 
-            # Compute weighted sum of weights and activations
-            weighted_sum = (bucket_weights * bucket_activations.unsqueeze(1)).sum(dim=0)
-            num_weights = len(bucket)
 
-            # Calculate representative weight
-            representative_weight = weighted_sum / num_weights
+            """print(f"Bucket Tensor: {bucket_tensor}")
+            print(f"Rows: {rows}")
+            print(f"Cols: {cols}")
+            print(f"Bucket Activations Shape: {bucket_activations.shape}")
+            print(f"Bucket Weights Shape: {bucket_weights.shape}")"""
 
-            # Find the index of the most activated weight
-            most_activated_idx = bucket_tensor[bucket_activations.argmax()]
-            new_weights[most_activated_idx] = representative_weight
+            # Compute weighted sum and activation sum
+            weighted_sum = (bucket_weights * bucket_activations).sum()
+            activation_sum = bucket_activations.sum()
+
+            # Avoid division by zero
+            if activation_sum == 0:
+                representative_weight = 0
+            else:
+                representative_weight = weighted_sum / activation_sum
+
+            # Find the most activated weight
+            argmax_idx = bucket_activations.argmax()
+            most_activated_row, most_activated_col = rows[argmax_idx], cols[argmax_idx]
+            new_weights[most_activated_row, most_activated_col] = representative_weight
+          
+
 
             # Store the representative index
-            representative_indices[i] = most_activated_idx
+            representative_indices[i] = most_activated_row * self.num_class + most_activated_col
 
         # Update the weights in the model
         self.params.weight.data = new_weights
@@ -153,9 +180,7 @@ class HashedFC(nn.Module):
     def forward(self, x):
         return self.params(x)
     
-    def he_init(self, weight):
-        if weight.dim() > 1:  # Ensure it's not applied to bias (1D tensor)
-            nn.init.kaiming_uniform_(weight, mode='fan_in', nonlinearity='relu')
+  
 
 
 class HashedNetwork(nn.Module):
@@ -164,7 +189,7 @@ class HashedNetwork(nn.Module):
         self.fc1 = HashedFC(input_dim, hidden_dim, K=3)
         self.fc2 = HashedFC(hidden_dim, hidden_dim, K=5)
         self.fc3 = HashedFC(hidden_dim, hidden_dim, K=4)
-        self.fc4 = HashedFC(hidden_dim, output_dim, K=4)
+        self.fc4 = HashedFC(hidden_dim, output_dim, K=10)
         self.rehash = False
 
 
@@ -174,21 +199,21 @@ class HashedNetwork(nn.Module):
             self.fc2.update_weights(self.fc1.num_class)
             self.fc3.update_weights(self.fc2.num_class)
             self.fc4.update_weights(self.fc3.num_class)
-            self.fc1.running_activations = torch.zeros(self.fc1.num_class, device='cuda:0')
-            self.fc2.running_activations = torch.zeros(self.fc2.num_class, device='cuda:0')
-            self.fc3.running_activations = torch.zeros(self.fc3.num_class, device='cuda:0')
+            self.fc1.running_activations = torch.zeros(x.shape[1], self.fc1.num_class, device='cuda:0')
+            self.fc2.running_activations = torch.zeros(self.fc1.num_class, self.fc2.num_class, device='cuda:0')
+            self.fc3.running_activations = torch.zeros(self.fc2.num_class, self.fc3.num_class, device='cuda:0')
             self.rehash = False
 
 
         x = F.relu(self.fc1(x))
-        activations = torch.sum(x, dim=0)
-        self.fc1.accumulate_metrics(activations)
+        #activations = torch.sum(x, dim=0)
+        self.fc1.accumulate_metrics(x)
         x = F.relu(self.fc2(x))
-        self.fc2.accumulate_metrics(torch.sum(x, dim=0))
+        self.fc2.accumulate_metrics(x)
         x = self.fc3(x)
-        self.fc3.accumulate_metrics(torch.sum(x, dim=0))
+        self.fc3.accumulate_metrics(x)
         x = self.fc4(x)
-        self.fc4.accumulate_metrics(torch.sum(x, dim=0))
+        self.fc4.accumulate_metrics(x)
 
         return x
 
@@ -231,6 +256,7 @@ def train_model(model, optimizer, criterion, X_train, y_train, epochs=29, prune_
         optimizer.zero_grad()
         output = model(X_train)
         if rehash:
+            print("rehashing")
             optimizer.param_groups = []
             new_params = model.fc1.params.parameters()
             optimizer.add_param_group({'params': new_params})
@@ -249,7 +275,7 @@ def train_model(model, optimizer, criterion, X_train, y_train, epochs=29, prune_
         loss = criterion(output, y_train)
         loss.backward()
         print(f"Epoch {epoch+1} Loss: {loss}")
-        #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
         optimizer.step()
        
