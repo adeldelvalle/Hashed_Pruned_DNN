@@ -9,8 +9,10 @@ from sklearn.datasets import make_classification
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 import time
-import torch.nn.functional as F
-from adam_base import Adam
+from fvcore.nn import FlopCountAnalysis
+
+
+import matplotlib.pyplot as plt
 
 device = torch.device("cuda:0")
 
@@ -219,9 +221,43 @@ class VanillaNetwork(nn.Module):
 
 # Generate synthetic data
 def generate_synthetic_data(n_samples=10000, n_features=30, n_classes=10):
-    X, y = make_classification(n_samples=n_samples, n_features=n_features, n_classes=n_classes, random_state=42)
+    # Generate base dataset with feature complexity
+    X, y = make_classification(
+        n_samples=n_samples,
+        n_features=n_features,
+        n_informative=int(0.6 * n_features),
+        n_redundant=int(0.2 * n_features),
+        n_repeated=int(0.1 * n_features),
+        n_classes=n_classes,
+        weights=[0.7] + [0.3 / (n_classes - 1)] * (n_classes - 1),  # Class imbalance
+        flip_y=0.05,  # Add noise to labels
+        random_state=42
+    )
+
+    # Add non-linear transformations
+    X[:, 0] = np.sin(X[:, 0])
+    X[:, 1] = X[:, 1] ** 2
+
+    # Add mixed distributions
+    def generate_mixed_features(X):
+        X_uniform = np.random.uniform(-1, 1, size=(X.shape[0], X.shape[1] // 3))
+        X_categorical = np.random.choice([0, 1], size=(X.shape[0], X.shape[1] // 3))
+        return np.hstack([X, X_uniform, X_categorical])
+
+    X = generate_mixed_features(X)
+
+    # Add noise
+    noise = np.random.normal(0, 0.1, X.shape)
+    X += noise
+
+    # Add lagged features (simulate time-series)
+    for lag in range(1, 3):  # Add 2 lagged features
+        X = np.hstack([X, np.roll(X, lag, axis=0)])
+
+    # Preprocessing: scaling
     scaler = StandardScaler()
     X = scaler.fit_transform(X)
+
     return torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.long)
 
 
@@ -230,6 +266,8 @@ def train_model(model, optimizer, criterion, X_train, y_train, epochs=29, prune_
     """
     Train the model and prune hashed layers every 'prune_every' epochs.
     """
+    loss_history = []
+
     model.train()
     for epoch in range(epochs):
         # Dynamically prune and adjust hashed layers every 'prune_every' epochs
@@ -260,8 +298,10 @@ def train_model(model, optimizer, criterion, X_train, y_train, epochs=29, prune_
         loss.backward()
         print(f"Epoch {epoch+1} Loss: {loss}")
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        loss_history.append(loss.item())
 
         optimizer.step()
+    return loss_history
        
 
 # Function to measure accuracy
@@ -289,33 +329,72 @@ def compare_networks():
 
     # Generate data
     X, y = generate_synthetic_data(n_samples=10000, n_features=input_dim, n_classes=output_dim)
+    print(X.shape)
     X_train, y_train = X.to(device), y.to(device)
 
     # Hashed Network
-    hashed_model = HashedNetwork(input_dim, hidden_dim, output_dim).to(device)
+    hashed_model = HashedNetwork(X.shape[1], hidden_dim, output_dim).to(device)
     hashed_optimizer = torch.optim.Adam(hashed_model.parameters(), lr=0.001)
     hashed_criterion = nn.CrossEntropyLoss()
 
     start_time = time.time()
-    train_model(hashed_model, hashed_optimizer, hashed_criterion, X_train, y_train)
+    hashed_loss_history = train_model(hashed_model, hashed_optimizer, hashed_criterion, X_train, y_train)
     hashed_time = time.time() - start_time
     hashed_accuracy = measure_accuracy(hashed_model, X_train, y_train)
 
     # Vanilla Network
-    vanilla_model = VanillaNetwork(input_dim, hidden_dim, output_dim).to(device)
+    vanilla_model = VanillaNetwork(X.shape[1], hidden_dim, output_dim).to(device)
     vanilla_optimizer = torch.optim.Adam(vanilla_model.parameters(), lr=0.001)
     vanilla_criterion = nn.CrossEntropyLoss()
 
     start_time = time.time()
-    train_model(vanilla_model, vanilla_optimizer, vanilla_criterion, X_train, y_train)
+    vanilla_loss_history = train_model(vanilla_model, vanilla_optimizer, vanilla_criterion, X_train, y_train)
     vanilla_time = time.time() - start_time
     vanilla_accuracy = measure_accuracy(vanilla_model, X_train, y_train)
 
     print(f"Hashed Network Training Time: {hashed_time:.2f}s")
     print(f"Hashed Network Accuracy: {hashed_accuracy:.2f}%")
+    flops = FlopCountAnalysis(hashed_model, torch.randn(1, X.shape[1]).to(device))
+    print(f"Hashed Network FLOPS: {flops.total()}")
+    print_total_parameters(hashed_model, model_name="Hashed Network")
+
+    flops = FlopCountAnalysis(vanilla_model, torch.randn(1, X.shape[1]).to(device))
+
     print(f"Vanilla Network Training Time: {vanilla_time:.2f}s")
     print(f"Vanilla Network Accuracy: {vanilla_accuracy:.2f}%")
+    print(f"Vanilla Network FLOPS: {flops.total()}")
+    print_total_parameters(vanilla_model, model_name="Vanilla Network")
+
+
+    # Plotting
+    plot_results(hashed_loss_history, vanilla_loss_history)
+
+
+
+def print_total_parameters(model, model_name="Model"):
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"{model_name} - Total Parameters: {total_params:,}")
+    print(f"{model_name} - Trainable Parameters: {trainable_params:,}")
+
+
+def plot_results(hashed_loss, vanilla_loss):
+    epochs = list(range(1, len(hashed_loss) + 1))
+    
+    # Plot loss comparison
+    plt.figure(figsize=(10, 6))
+    plt.plot(epochs, hashed_loss, label="Hashed Network Loss", linestyle='-', marker='o')
+    plt.plot(epochs, vanilla_loss, label="Vanilla Network Loss", linestyle='--', marker='x')
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.title("Loss Comparison Between Hashed and Vanilla Networks")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig("loss_comparison.png")  # Save the plot as an image
+
+    plt.show()
 
 
 if __name__ == "__main__":
     compare_networks()
+
