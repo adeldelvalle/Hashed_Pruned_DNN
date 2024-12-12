@@ -13,8 +13,8 @@ This project explores the use of hashing-based algorithms to reduce redundancy i
 ## Milestones
 
 ### Milestone 1: Finishing LSH Algorithm ✅ 
-## 1.2: LSH with Maximum Inner Product Search ✅ 
-## 1.3: Representatives ✅ 
+#### 1.2: LSH with Maximum Inner Product Search ✅ 
+#### 1.3: Representatives ✅ 
 
 ### Milestone 2:  Layer dimensionality reshaping
 **Completion Status:** ✅ Completed  
