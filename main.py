@@ -10,163 +10,12 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 import time
 from fvcore.nn import FlopCountAnalysis
-
+import utils
 
 import matplotlib.pyplot as plt
 
 device = torch.device("cuda:0")
-
-class HashedFC(nn.Module):
-    def __init__(self, input_dim, output_dim, K):
-        super(HashedFC, self).__init__()
-        self.params = nn.Linear(input_dim, output_dim)
-        self.K = K  # Amount of Hash Functions
-        self.D = input_dim  # Input dimension
-        self.L = 1  # Single hash table
-        self.hash_weight = None  # Optionally provide custom hash weights
-        self.num_class = output_dim  # Number of output classes
-        self.init_weights(self.params.weight, self.params.bias)
-        self.rehash = False
-        # Activation counters and running metrics
-        self.running_activations = torch.zeros(input_dim, output_dim, device='cuda:0')
-        self.lsh = None
-
-
-    def init_weights(self, weight, bias):
-        initrange = 0.05
-        weight.data.uniform_(-initrange, initrange)
-        bias.data.fill_(0)
-
-    def initializeLSH(self):
-        simhash = SimHash(self.D + 1, self.K, self.L, self.hash_weight)
-        self.lsh = LSH(simhash, self.K, self.L)
-        weight_tolsh = torch.cat((self.params.weight, self.params.bias.unsqueeze(1)), dim=1)
-        self.lsh.insert_multi(weight_tolsh.to(device).data, self.num_class)
-
-    def rebuildLSH(self):
-        self.lsh.clear()
-        self.lsh.setSimHash(SimHash(self.D + 1, self.K, self.L))
-        weight_tolsh = torch.cat((self.params.weight, self.params.bias.unsqueeze(1)), dim=1)
-        self.lsh.insert_multi(weight_tolsh.to(device).data, self.num_class )
-
-
-    def accumulate_metrics(self, activations):
-        activation_mask = (activations > 0).float()
-        activation_summed = torch.sum(activation_mask, dim=0)
-        
-        # Accumulate only activations greater than 0
-        self.running_activations += activation_summed.unsqueeze(0)
-
-
-    def select_representatives(self):
-        """
-        Select representatives based on the weighted average of activations and weights.
-        """
-        if self.lsh is None: 
-            self.initializeLSH()
-        else:
-            self.rebuildLSH()
-
-        # Get bucket indices
-        bucket_indices = self.lsh.representatives()
-
-        # Clone the weight tensor to avoid in-place modification
-        new_weights = self.params.weight.clone()
-
-        # Preallocate tensor for representatives
-        device = self.params.weight.device
-        representative_indices = torch.empty(len(bucket_indices), dtype=torch.long, device=device)
-
-        # Process each bucket
-        for i, bucket in enumerate(bucket_indices):
-            if len(bucket) == 0:
-                # Handle empty buckets by assigning a dummy value (e.g., -1)
-                representative_indices[i] = -1
-                continue
-
-            if len(bucket) == 1:
-                # Directly handle single-weight buckets
-                single_idx = list(bucket)[0]
-                row, col = single_idx // self.num_class, single_idx % self.D
-                representative_indices[i] = single_idx
-                new_weights[row, col] = self.params.weight[row, col]
-                continue
-
-            # Convert bucket indices to tensor
-            bucket_tensor = torch.tensor(list(bucket), dtype=torch.long, device=device)
-
-            # Convert flat indices to (row, column) pairs
-            rows = bucket_tensor // self.num_class  # Row indices
-            cols = bucket_tensor % self.D  # Column indices
-
-            # Gather weights and activations for the current bucket
-            bucket_activations = self.running_activations[rows, cols]  # Shape: [len(bucket)]
-            bucket_weights = self.params.weight[rows, cols]  # Shape: [len(bucket)]
-
-            # Compute weighted sum and activation sum
-            weighted_sum = (bucket_weights * bucket_activations).sum()
-            activation_sum = bucket_activations.sum()
-
-            # Avoid division by zero
-            if activation_sum == 0:
-                representative_weight = 0
-            else:
-                representative_weight = weighted_sum / activation_sum
-
-            # Find the most activated weight
-            argmax_idx = bucket_activations.argmax()
-            most_activated_row, most_activated_col = rows[argmax_idx], cols[argmax_idx]
-            new_weights[most_activated_row, most_activated_col] = representative_weight
-          
-            # Store the representative index
-            representative_indices[i] = most_activated_row * self.num_class + most_activated_col
-
-        # Update the weights in the model
-        self.params.weight.data = new_weights
-
-        return representative_indices
-
-
-    def prune_weights(self, representatives, input_dim):
-        # Ensure `representatives` is a tensor of indices
-        keep_indices = representatives
-
-        # Slice rows (output dimensions) and keep all columns for now
-        pruned_weights = self.params.weight[keep_indices, :input_dim]  # Slice rows and columns
-        pruned_biases = self.params.bias[keep_indices]                 # Slice only rows for biases
-
-        #print(f"Pruned weights shape: {pruned_weights.shape}, Pruned biases shape: {pruned_biases.shape}")
-
-        # Update the number of classes (output dimensions)
-        self.num_class = len(representatives)
-        self.D = input_dim  # Number of input features
-
-        # Verify dimensions
-        #print(f"Input dim: {self.D}, Reps: {self.num_class}")
-
-        # Initialize a new Linear layer with pruned dimensions
-        new_layer = nn.Linear(self.D, self.num_class).to(device)
-
-        # Copy pruned weights and biases into the new layer
-        new_layer.weight.data.copy_(pruned_weights)
-        new_layer.bias.data.copy_(pruned_biases)
-        #print(f"New layer after assignment: {new_layer.weight.shape}, {new_layer.bias.shape}")
-
-        self.init_weights(new_layer.weight, new_layer.bias)
-        # Replace the old layer
-        self.params = new_layer
-        self.add_module('params', self.params)
-        
-        #print(f"Pruned weights. Kept indices: {representatives}")"""
-
-
-    def update_weights(self, input_dim):
-        representatives = self.select_representatives()
-        self.prune_weights(representatives, input_dim)
-
-    def forward(self, x):
-        return self.params(x)
-    
+from hashedFC import HashedFC
 
 
 class HashedNetwork(nn.Module):
@@ -196,7 +45,7 @@ class HashedNetwork(nn.Module):
         self.fc1.accumulate_metrics(x)
         x = F.relu(self.fc2(x))
         self.fc2.accumulate_metrics(x)
-        x = self.fc3(x)
+        x = F.relu(self.fc3(x))
         self.fc3.accumulate_metrics(x)
         x = self.fc4(x)
         self.fc4.accumulate_metrics(x)
@@ -215,50 +64,10 @@ class VanillaNetwork(nn.Module):
     def forward(self, x):
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        x = self.fc3(x)
+        x = F.relu(self.fc3(x))
+        x = self.fc4(x)
         return x
 
-
-# Generate synthetic data
-def generate_synthetic_data(n_samples=10000, n_features=30, n_classes=10):
-    # Generate base dataset with feature complexity
-    X, y = make_classification(
-        n_samples=n_samples,
-        n_features=n_features,
-        n_informative=int(0.6 * n_features),
-        n_redundant=int(0.2 * n_features),
-        n_repeated=int(0.1 * n_features),
-        n_classes=n_classes,
-        weights=[0.7] + [0.3 / (n_classes - 1)] * (n_classes - 1),  # Class imbalance
-        flip_y=0.05,  # Add noise to labels
-        random_state=42
-    )
-
-    # Add non-linear transformations
-    X[:, 0] = np.sin(X[:, 0])
-    X[:, 1] = X[:, 1] ** 2
-
-    # Add mixed distributions
-    def generate_mixed_features(X):
-        X_uniform = np.random.uniform(-1, 1, size=(X.shape[0], X.shape[1] // 3))
-        X_categorical = np.random.choice([0, 1], size=(X.shape[0], X.shape[1] // 3))
-        return np.hstack([X, X_uniform, X_categorical])
-
-    X = generate_mixed_features(X)
-
-    # Add noise
-    noise = np.random.normal(0, 0.1, X.shape)
-    X += noise
-
-    # Add lagged features (simulate time-series)
-    for lag in range(1, 3):  # Add 2 lagged features
-        X = np.hstack([X, np.roll(X, lag, axis=0)])
-
-    # Preprocessing: scaling
-    scaler = StandardScaler()
-    X = scaler.fit_transform(X)
-
-    return torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.long)
 
 
 # Train function
@@ -316,11 +125,6 @@ def measure_accuracy(model, X, y):
     return accuracy
 
 
-def monitor_gradients(model):
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            param.register_hook(lambda grad, name=name: print(f"{name} gradient mean: {grad.mean().item()}, std: {grad.std().item()}"))
-
 # Main comparison
 def compare_networks():
     input_dim = 60
@@ -328,32 +132,51 @@ def compare_networks():
     output_dim = 2
 
     # Generate data
-    X, y = generate_synthetic_data(n_samples=10000, n_features=input_dim, n_classes=output_dim)
+    X, y = utils.generate_synthetic_data(n_samples=10000, n_features=input_dim, n_classes=output_dim)
+    #X, y = get_higgs_small_dataset()
     print(X.shape)
-    X_train, y_train = X.to(device), y.to(device)
+
+    
+    #X_train, y_train = X.to(device), y.to(device)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+
+    X_train, X_test = torch.tensor(X_train, dtype=torch.float32).to(device), torch.tensor(X_test, dtype=torch.float32).to(device)
+    y_train, y_test = torch.tensor(y_train, dtype=torch.long).to(device), torch.tensor(y_test, dtype=torch.long).to(device)
 
     # Hashed Network
     hashed_model = HashedNetwork(X.shape[1], hidden_dim, output_dim).to(device)
     hashed_optimizer = torch.optim.Adam(hashed_model.parameters(), lr=0.001)
     hashed_criterion = nn.CrossEntropyLoss()
+    #wandb.init(project="hashed-vs-vanilla", name="HashedNetworkAnalysis")
 
     start_time = time.time()
+    
     hashed_loss_history = train_model(hashed_model, hashed_optimizer, hashed_criterion, X_train, y_train)
     hashed_time = time.time() - start_time
     hashed_accuracy = measure_accuracy(hashed_model, X_train, y_train)
+    hashed_test_accuracy = measure_accuracy(hashed_model, X_test, y_test)
+    #wandb.finish()
+
 
     # Vanilla Network
     vanilla_model = VanillaNetwork(X.shape[1], hidden_dim, output_dim).to(device)
     vanilla_optimizer = torch.optim.Adam(vanilla_model.parameters(), lr=0.001)
     vanilla_criterion = nn.CrossEntropyLoss()
+    #wandb.init(project="hashed-vs-vanilla", name="VanillaNetworkAnalysis")
 
     start_time = time.time()
+    
     vanilla_loss_history = train_model(vanilla_model, vanilla_optimizer, vanilla_criterion, X_train, y_train)
     vanilla_time = time.time() - start_time
     vanilla_accuracy = measure_accuracy(vanilla_model, X_train, y_train)
+    vanilla_test_accuracy = measure_accuracy(vanilla_model, X_test, y_test)
+    #wandb.finish()
 
     print(f"Hashed Network Training Time: {hashed_time:.2f}s")
     print(f"Hashed Network Accuracy: {hashed_accuracy:.2f}%")
+    print(f"Hashed Network - Test Accuracy: {hashed_test_accuracy:.2f}%")
+
     flops = FlopCountAnalysis(hashed_model, torch.randn(1, X.shape[1]).to(device))
     print(f"Hashed Network FLOPS: {flops.total()}")
     print_total_parameters(hashed_model, model_name="Hashed Network")
@@ -362,12 +185,16 @@ def compare_networks():
 
     print(f"Vanilla Network Training Time: {vanilla_time:.2f}s")
     print(f"Vanilla Network Accuracy: {vanilla_accuracy:.2f}%")
+    print(f"Vanilla Network - Test Accuracy: {vanilla_test_accuracy:.2f}%")
+
     print(f"Vanilla Network FLOPS: {flops.total()}")
     print_total_parameters(vanilla_model, model_name="Vanilla Network")
 
 
     # Plotting
-    plot_results(hashed_loss_history, vanilla_loss_history)
+    utils.plot_results(hashed_loss_history, vanilla_loss_history)
+    utils.plot_layerwise_weight_distribution(hashed_model, "HashedNN")
+    utils.plot_layerwise_weight_distribution(vanilla_model, "VanillaNN")
 
 
 
@@ -378,23 +205,6 @@ def print_total_parameters(model, model_name="Model"):
     print(f"{model_name} - Trainable Parameters: {trainable_params:,}")
 
 
-def plot_results(hashed_loss, vanilla_loss):
-    epochs = list(range(1, len(hashed_loss) + 1))
-    
-    # Plot loss comparison
-    plt.figure(figsize=(10, 6))
-    plt.plot(epochs, hashed_loss, label="Hashed Network Loss", linestyle='-', marker='o')
-    plt.plot(epochs, vanilla_loss, label="Vanilla Network Loss", linestyle='--', marker='x')
-    plt.xlabel("Epochs")
-    plt.ylabel("Loss")
-    plt.title("Loss Comparison Between Hashed and Vanilla Networks")
-    plt.legend()
-    plt.grid(True)
-    plt.savefig("loss_comparison.png")  # Save the plot as an image
-
-    plt.show()
-
 
 if __name__ == "__main__":
     compare_networks()
-
