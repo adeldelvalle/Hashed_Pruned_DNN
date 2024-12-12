@@ -19,6 +19,10 @@ from hashedFC import HashedFC
 
 
 class HashedNetwork(nn.Module):
+    """ Class for the Hash Network. It creates several sub-modules from from the HashedFC
+    class, which have all the functions to update weights, accumulate metrics, 
+    initialize LSH, and more. 
+    """
     def __init__(self, input_dim, hidden_dim, output_dim):
         super(HashedNetwork, self).__init__()
         self.fc1 = HashedFC(input_dim, hidden_dim, K=3)
@@ -30,10 +34,13 @@ class HashedNetwork(nn.Module):
 
     def forward(self, x):
         if self.rehash:
+            # ------------------- Rehashing and updating weights --------------- #
             self.fc1.update_weights(x.shape[1])
             self.fc2.update_weights(self.fc1.num_class)
             self.fc3.update_weights(self.fc2.num_class)
             self.fc4.update_weights(self.fc3.num_class)
+
+            # ------------------ Resetting activations tensors for the new rehashed weights ------------- #
             self.fc1.running_activations = torch.zeros(x.shape[1], self.fc1.num_class, device='cuda:0')
             self.fc2.running_activations = torch.zeros(self.fc1.num_class, self.fc2.num_class, device='cuda:0')
             self.fc3.running_activations = torch.zeros(self.fc2.num_class, self.fc3.num_class, device='cuda:0')
@@ -41,8 +48,7 @@ class HashedNetwork(nn.Module):
 
 
         x = F.relu(self.fc1(x))
-        #activations = torch.sum(x, dim=0)
-        self.fc1.accumulate_metrics(x)
+        self.fc1.accumulate_metrics(x)  # Accumulate activations for the weighted average
         x = F.relu(self.fc2(x))
         self.fc2.accumulate_metrics(x)
         x = F.relu(self.fc3(x))
@@ -87,6 +93,11 @@ def train_model(model, optimizer, criterion, X_train, y_train, epochs=29, prune_
         optimizer.zero_grad()
         output = model(X_train)
         if rehash:
+            # -------------------- Temporal solution while thinking of how to modify the optimizer/gradient parameters in place  ----------- #
+            # --------------------  We clean the param groups because the optimizer will try to optimize the pruned params ----------- #
+
+            # - To-do / Enhancement: Do rehashing layer-wise instead of the full network. 
+
             print("rehashing")
             optimizer.param_groups = []
             new_params = model.fc1.params.parameters()
@@ -127,6 +138,8 @@ def measure_accuracy(model, X, y):
 
 # Main comparison
 def compare_networks():
+    """ Method to compare networks. It creates an instance of every network, and trains them
+     with the same parameters, optimizers, struture, and data.  """
     input_dim = 60
     hidden_dim = 15000
     output_dim = 2
@@ -134,11 +147,10 @@ def compare_networks():
     # Generate data
     X, y = utils.generate_synthetic_data(n_samples=10000, n_features=input_dim, n_classes=output_dim)
     #X, y = get_higgs_small_dataset()
-    print(X.shape)
 
     
     #X_train, y_train = X.to(device), y.to(device)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)  # Split data 
     
 
     X_train, X_test = torch.tensor(X_train, dtype=torch.float32).to(device), torch.tensor(X_test, dtype=torch.float32).to(device)
@@ -151,6 +163,8 @@ def compare_networks():
     #wandb.init(project="hashed-vs-vanilla", name="HashedNetworkAnalysis")
 
     start_time = time.time()
+
+    # --------------------------- Training of Hashed Neural Network --------------------------- #
     
     hashed_loss_history = train_model(hashed_model, hashed_optimizer, hashed_criterion, X_train, y_train)
     hashed_time = time.time() - start_time
@@ -159,7 +173,8 @@ def compare_networks():
     #wandb.finish()
 
 
-    # Vanilla Network
+    # --------------------------- Training of Vanilla Neural Network --------------------------- #
+
     vanilla_model = VanillaNetwork(X.shape[1], hidden_dim, output_dim).to(device)
     vanilla_optimizer = torch.optim.Adam(vanilla_model.parameters(), lr=0.001)
     vanilla_criterion = nn.CrossEntropyLoss()
@@ -172,6 +187,8 @@ def compare_networks():
     vanilla_accuracy = measure_accuracy(vanilla_model, X_train, y_train)
     vanilla_test_accuracy = measure_accuracy(vanilla_model, X_test, y_test)
     #wandb.finish()
+
+    # -------------------------- Training Finished, print stats -------------------------------- #
 
     print(f"Hashed Network Training Time: {hashed_time:.2f}s")
     print(f"Hashed Network Accuracy: {hashed_accuracy:.2f}%")
