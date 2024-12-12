@@ -60,4 +60,46 @@ This project explores the use of hashing-based algorithms to reduce redundancy i
 
 ### Directory Structure
 
- ├── main.py # Entry point for training and evaluation 
+```
+project
+│   README.md
+│   cupy_kernel.py
+│   hashedFC.py   #  Class for the Initial Hashed Fully Connected Layer. 
+│   lsh.py      # LSH construction and call of Cython module
+│   main.py   # Experiments being down, build of HashedNN and Vanilla NN 
+│   simHash.py    # Kernel for building fingerprints and producing the random projections
+│   utils.py     # Utils functions for main
+│
+└───clsh
+│   │   LSH.cpp    # All the dynamics of LSH with multi-threading 
+│   │   LSH.h  
+│   │   Makefile
+│   │   clsh.pyx    # Modularized LSH interaction with Python
+│   │   cupy_kernel.py
+│   │   matrix_simhash.py
+│   │   query_mul_interface.py
+│   │   setup.py    # Set-up the Cython module
+```
+
+To run the project, first you need to setup the Cython module:
+
+```
+python setup.py build_ext --inplace
+```
+
+This will produce a .so file. If you have problems importing clsh, export the variable to that .so file.
+
+Then, you can simply run 
+
+```python main.py```
+
+and experiment from there. 
+
+# Prelimiinary Results
+
+| Network  | FLOPs       | Training acc  | Testing acc | Running time | Speedup  | Total parameters |
+|------------|------------|------------|------------|------------|------------|------------|
+| Hashed NN | 4,435,310  | 69.39%-75.10% |68.25%-70.60%| 14.21 (s)|2.42x|4,439,333 |
+| Vanilla NN| 456,030,000| 69.39%  | 68.25% |34.53 (s)|1 |456,075,002|
+
+
