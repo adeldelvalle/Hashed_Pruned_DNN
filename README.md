@@ -102,6 +102,23 @@ and experiment from there.
 | Hashed NN | 4,435,310  | 69.39%-75.10% |68.25%-70.60%| 14.21 (s)|2.42x|4,439,333 |
 | Vanilla NN| 456,030,000| 69.39%  | 68.25% |34.53 (s)|1 |456,075,002|
 
- ![A cat](assets/W&B_Chart_12_11_2024,_6_27_08 PM.png "A cute cat")  
+## Models epoch loss per step
+![W&B Chart](assets/W%26B%20Chart%2012_11_2024,%206_27_08%20PM.png)
+
+## Runtime per step 
+
+![W&B Chart](assets/W%26B%20Chart%2012_11_2024,%206_27_01%20PM.png)
+
+We can observe how after the first rehashing, the runtime of the Hashed NN doesn't increase as the Vanilla one. 
+
+## FC1 Weight norm 
+
+![W&B Chart](assets/W%26B%20Chart%2012_11_2024,%206_49_55%20PM-2.png)
+
+As we can see, each hashing brings the Hashed NN weights norm lower, which is more suited for more stable updates and better generalization.
+
+## Final gradient weight norms
+
+![W&B Chart](assets/W%26B%20Chart%2012_11_2024,%206_26_53%20PM.png)
 
 
