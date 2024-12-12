@@ -102,4 +102,6 @@ and experiment from there.
 | Hashed NN | 4,435,310  | 69.39%-75.10% |68.25%-70.60%| 14.21 (s)|2.42x|4,439,333 |
 | Vanilla NN| 456,030,000| 69.39%  | 68.25% |34.53 (s)|1 |456,075,002|
 
+ ![A cat](assets/W&B_Chart_12_11_2024,_6_27_08 PM.png "A cute cat")  
+
 
